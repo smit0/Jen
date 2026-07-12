@@ -3,122 +3,104 @@ pipeline {
     agent any
 
     environment {
+
+        APP_SERVER = "172.18.20.10"
+        APP_USER = "opc"
+
+        APP_DIR = "/home/opc/docker-app"
+
         TZ = "Asia/Kolkata"
+
     }
 
     stages {
 
         stage('Checkout') {
+
             steps {
+
                 checkout scm
+
             }
+
         }
 
-        stage('Build Docker Image') {
+        stage('Deploy Application') {
+
             steps {
-                script {
 
-                    def buildName = sh(
-                        script: "TZ=Asia/Kolkata date +%d-%m-%Y-%H-%M-%S",
-                        returnStdout: true
-                    ).trim()
+                sh """
 
-                    def imageName = "nivi-${buildName}"
+ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_SERVER} '
 
-                    echo "Building Image: ${imageName}"
+cd ${APP_DIR}
 
-                    docker.build(imageName)
+echo "Updating Source"
 
-                    env.IMAGE_NAME = imageName
-                }
+git pull
+
+BUILD_NAME=\$(TZ=Asia/Kolkata date +%d-%m-%Y-%H-%M-%S)
+
+IMAGE=nivi-\$BUILD_NAME
+
+CONTAINER=\${IMAGE}-container
+
+echo "Building Docker Image"
+
+docker build -t \$IMAGE .
+
+echo "Stopping Running Containers"
+
+docker ps -a \
+--filter "name=nivi-" \
+--format "{{.Names}}" \
+| while read c
+do
+docker rm -f \$c || true
+done
+
+echo "Starting Container"
+
+docker run -d \
+-p 80:80 \
+--restart unless-stopped \
+--name \$CONTAINER \
+\$IMAGE
+
+echo "Removing old Containers"
+
+docker ps -a \
+--filter "name=nivi-" \
+--format "{{.CreatedAt}} {{.Names}}" \
+| sort -r \
+| awk "{print \\$NF}" \
+| tail -n +6 \
+| while read c
+do
+docker rm -f \$c || true
+done
+
+echo "Removing old Images"
+
+docker images \
+--format "{{.CreatedAt}} {{.Repository}}" \
+| grep "nivi-" \
+| sort -r \
+| awk "{print \\$NF}" \
+| tail -n +6 \
+| while read i
+do
+docker rmi -f \$i || true
+done
+
+docker ps
+
+'
+
+"""
+
             }
-        }
 
-        stage('Deploy Container') {
-            steps {
-                script {
-
-                    def containerName = "${env.IMAGE_NAME}-container"
-
-                    echo "Deploying Container: ${containerName}"
-
-                    sh """
-                    docker run -d \
-                        --restart unless-stopped \
-                        --name ${containerName} \
-                        ${env.IMAGE_NAME}
-                    """
-                }
-            }
-        }
-
-        stage('Cleanup Old Containers') {
-            steps {
-                sh '''
-                echo "Keeping latest 5 containers..."
-
-                docker ps -a \
-                --filter "name=nivi-" \
-                --format "{{.CreatedAt}} {{.Names}}" | \
-                sort -r | \
-                awk '{print $NF}' | \
-                tail -n +6 | \
-                while read container
-                do
-                    echo "Removing $container"
-                    docker rm -f $container
-                done
-                '''
-            }
-        }
-
-        stage('Cleanup Old Images') {
-            steps {
-                sh '''
-                echo "Keeping latest 5 images..."
-
-                docker images \
-                --format "{{.CreatedAt}} {{.Repository}}:{{.Tag}}" | \
-                grep "^.* nivi-" | \
-                sort -r | \
-                awk '{print $NF}' | \
-                tail -n +6 | \
-                while read image
-                do
-                    echo "Removing image $image"
-                    docker rmi -f $image || true
-                done
-                '''
-            }
-        }
-
-        stage('Verify') {
-            steps {
-                sh '''
-                echo "========== Docker Images =========="
-                docker images
-
-                echo
-                echo "========== Running Containers =========="
-                docker ps
-
-                echo
-                echo "========== All Containers =========="
-                docker ps -a
-                '''
-            }
-        }
-
-    }
-
-    post {
-
-        success {
-            echo "✅ Deployment Successful"
-        }
-
-        failure {
-            echo "❌ Deployment Failed"
         }
 
     }
