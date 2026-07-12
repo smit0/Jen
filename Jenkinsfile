@@ -1,66 +1,57 @@
-stage('Deploy Docker') {
+pipeline {
+    agent any
+
+    stages {
+        stage('Checkout') {
             steps {
-                sh """
-                ssh \
-                -i /var/lib/jenkins/.ssh/id_ed25519 \
-                -o StrictHostKeyChecking=no \
-                ${APP_USER}@${APP_SERVER} << 'EOF'
-
-                set -e
-
-                cd ${DEPLOY_DIR}
-
-                BUILD_NAME=\$(TZ=Asia/Kolkata date +%d-%m-%Y-%H-%M-%S)
-
-                IMAGE=nivi-\${BUILD_NAME}
-                CONTAINER=\${IMAGE}-container
-
-                echo "=================================="
-                echo "Building Docker Image : \${IMAGE}"
-                echo "=================================="
-
-                docker build -t \${IMAGE} .
-
-                echo "Starting new container..."
-
-                docker run -d \
-                    --restart unless-stopped \
-                    --name \${CONTAINER} \
-                    -p 80:80 \
-                    \${IMAGE}
-
-                echo "Cleaning old containers (Keeping latest 5)..."
-
-                # 1. List all nivi- containers ordered from newest to oldest
-                # 2. Skip the first 5 lines (the 5 newest containers) using tail -n +6
-                # 3. Delete any remaining older containers
-                docker ps -a \
-                    --filter "name=nivi-" \
-                    --format "{{.CreatedAt}} {{.Names}}" \
-                    | sort -r \
-                    | awk '{print \$NF}' \
-                    | tail -n +6 \
-                    | while read c
-                do
-                    [ -n "\$c" ] && docker rm -f "\$c" || true
-                done
-
-                echo "Cleaning old images (Keeping latest 5)..."
-
-                docker images \
-                    --format "{{.CreatedAt}} {{.Repository}}:{{.Tag}}" \
-                    | grep "^nivi-" \
-                    | sort -r \
-                    | awk '{print \$NF}' \
-                    | tail -n +6 \
-                    | while read img
-                do
-                    [ -n "\$img" ] && docker rmi -f "\$img" || true
-                done
-
-                echo "Deployment Completed Successfully."
-
-                EOF
-                """
+                // Clones the repository
+                checkout scm
             }
         }
+
+        stage('Copy Application') {
+            steps {
+                // Copies the Dockerfile and necessary files to the target server
+                sh 'scp -i /var/lib/jenkins/.ssh/id_ed25519 -o StrictHostKeyChecking=no -r Dockerfile Jenkinsfile jenkinsfile_old opc@172.18.20.46:/home/opc/docker-app'
+            }
+        }
+
+        stage('Deploy Docker') {
+            steps {
+                // Connects via SSH, changes directory to where the files are, and runs the build
+                sh '''
+                    ssh -i /var/lib/jenkins/.ssh/id_ed25519 -o StrictHostKeyChecking=no opc@172.18.20.46 << 'EOF'
+                        cd /home/opc/docker-app
+                        
+                        echo "=================================="
+                        echo "Building Docker Image..."
+                        echo "=================================="
+                        
+                        # Dynamically tracks the image build using the context directory
+                        docker build -t nivi-image .
+EOF
+                '''
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                echo "Verifying deployment..."
+                // Add your deployment verification commands here (e.g., docker run or curl checks)
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Deployment completed successfully!'
+        }
+        failure {
+            echo 'Deployment failed.'
+        }
+        always {
+            // Wipes the Jenkins workspace after the run to clean up build remnants
+            cleanWs()
+        }
+    }
+}
