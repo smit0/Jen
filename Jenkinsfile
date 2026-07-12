@@ -1,136 +1,66 @@
-pipeline {
-
-    agent any
-
-    environment {
-        APP_SERVER = "172.18.20.46"
-        APP_USER   = "opc"
-        DEPLOY_DIR = "/home/opc/docker-app"
-        TZ         = "Asia/Kolkata"
-    }
-
-    stages {
-
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('Copy Application') {
+stage('Deploy Docker') {
             steps {
                 sh """
-                scp -o StrictHostKeyChecking=no -r * \
-                ${APP_USER}@${APP_SERVER}:${DEPLOY_DIR}
+                ssh \
+                -i /var/lib/jenkins/.ssh/id_ed25519 \
+                -o StrictHostKeyChecking=no \
+                ${APP_USER}@${APP_SERVER} << 'EOF'
+
+                set -e
+
+                cd ${DEPLOY_DIR}
+
+                BUILD_NAME=\$(TZ=Asia/Kolkata date +%d-%m-%Y-%H-%M-%S)
+
+                IMAGE=nivi-\${BUILD_NAME}
+                CONTAINER=\${IMAGE}-container
+
+                echo "=================================="
+                echo "Building Docker Image : \${IMAGE}"
+                echo "=================================="
+
+                docker build -t \${IMAGE} .
+
+                echo "Starting new container..."
+
+                docker run -d \
+                    --restart unless-stopped \
+                    --name \${CONTAINER} \
+                    -p 80:80 \
+                    \${IMAGE}
+
+                echo "Cleaning old containers (Keeping latest 5)..."
+
+                # 1. List all nivi- containers ordered from newest to oldest
+                # 2. Skip the first 5 lines (the 5 newest containers) using tail -n +6
+                # 3. Delete any remaining older containers
+                docker ps -a \
+                    --filter "name=nivi-" \
+                    --format "{{.CreatedAt}} {{.Names}}" \
+                    | sort -r \
+                    | awk '{print \$NF}' \
+                    | tail -n +6 \
+                    | while read c
+                do
+                    [ -n "\$c" ] && docker rm -f "\$c" || true
+                done
+
+                echo "Cleaning old images (Keeping latest 5)..."
+
+                docker images \
+                    --format "{{.CreatedAt}} {{.Repository}}:{{.Tag}}" \
+                    | grep "^nivi-" \
+                    | sort -r \
+                    | awk '{print \$NF}' \
+                    | tail -n +6 \
+                    | while read img
+                do
+                    [ -n "\$img" ] && docker rmi -f "\$img" || true
+                done
+
+                echo "Deployment Completed Successfully."
+
+                EOF
                 """
             }
         }
-
-        stage('Deploy Docker') {
-            steps {
-                sh """
-ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_SERVER} << 'EOF'
-
-set -e
-
-cd ${DEPLOY_DIR}
-
-BUILD_NAME=\$(TZ=Asia/Kolkata date +%d-%m-%Y-%H-%M-%S)
-
-IMAGE="nivi-\$BUILD_NAME"
-
-CONTAINER="\$IMAGE-container"
-
-echo "======================================="
-echo "Building Image : \$IMAGE"
-echo "Container Name : \$CONTAINER"
-echo "======================================="
-
-docker build -t \$IMAGE .
-
-echo "Stopping previous running containers..."
-
-docker ps --filter "ancestor=nivi*" -q | while read id
-do
-    [ -n "\$id" ] && docker stop \$id || true
-done
-
-echo "Removing old containers..."
-
-docker ps -a --filter "name=nivi-" -q | while read id
-do
-    [ -n "\$id" ] && docker rm -f \$id || true
-done
-
-echo "Starting new container..."
-
-docker run -d \
-    --restart unless-stopped \
-    --name \$CONTAINER \
-    -p 80:80 \
-    \$IMAGE
-
-sleep 10
-
-echo "Checking container status..."
-
-docker ps | grep \$CONTAINER
-
-echo "Cleaning exited containers..."
-
-docker container prune -f
-
-echo "Keeping latest 5 images..."
-
-docker images \
---format "{{.Repository}} {{.Tag}} {{.CreatedAt}}" \
-| grep "^nivi-" \
-| sort -rk3 \
-| awk 'NR>5 {print \$1":"\$2}' \
-| while read img
-do
-    docker rmi -f \$img || true
-done
-
-echo "Deployment completed successfully."
-
-EOF
-"""
-            }
-        }
-
-        stage('Verify Deployment') {
-            steps {
-                sh """
-ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_SERVER} << 'EOF'
-
-echo "========== Running Containers =========="
-docker ps
-
-echo
-echo "========== Docker Images =========="
-docker images
-
-EOF
-"""
-            }
-        }
-
-    }
-
-    post {
-
-        success {
-            echo "Deployment completed successfully."
-        }
-
-        failure {
-            echo "Deployment failed."
-        }
-
-        always {
-            cleanWs()
-        }
-
-    }
-}
