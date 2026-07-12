@@ -18,19 +18,19 @@ pipeline {
 
         stage('Copy Application') {
             steps {
-                sh '''
+                sh """
                 scp \
                 -i /var/lib/jenkins/.ssh/id_ed25519 \
                 -o StrictHostKeyChecking=no \
                 -r * \
                 ${APP_USER}@${APP_SERVER}:${DEPLOY_DIR}
-                '''
+                """
             }
         }
 
         stage('Deploy Docker') {
             steps {
-                sh '''
+                sh """
                 ssh \
                 -i /var/lib/jenkins/.ssh/id_ed25519 \
                 -o StrictHostKeyChecking=no \
@@ -40,68 +40,68 @@ pipeline {
 
                 cd ${DEPLOY_DIR}
 
-                BUILD_NAME=$(TZ=Asia/Kolkata date +%d-%m-%Y-%H-%M-%S)
+                BUILD_NAME=\$(TZ=Asia/Kolkata date +%d-%m-%Y-%H-%M-%S)
 
-                IMAGE=nivi-${BUILD_NAME}
-                CONTAINER=${IMAGE}-container
+                IMAGE=nivi-\${BUILD_NAME}
+                CONTAINER=\${IMAGE}-container
 
                 echo "=================================="
-                echo "Building Docker Image : ${IMAGE}"
+                echo "Building Docker Image : \${IMAGE}"
                 echo "=================================="
 
-                docker build -t ${IMAGE} .
+                docker build -t \${IMAGE} .
 
                 echo "Stopping old containers..."
 
                 docker ps -aq --filter "name=nivi-" | while read c
                 do
-                    [ -n "$c" ] && docker rm -f "$c" || true
+                    [ -n "\$c" ] && docker rm -f "\$c" || true
                 done
 
                 echo "Starting new container..."
 
                 docker run -d \
                     --restart unless-stopped \
-                    --name ${CONTAINER} \
+                    --name \${CONTAINER} \
                     -p 80:80 \
-                    ${IMAGE}
+                    \${IMAGE}
 
-                echo "Cleaning old containers..."
+                echo "Cleaning old containers (Keeping latest 5)..."
 
                 docker ps -a \
                     --filter "name=nivi-" \
                     --format "{{.CreatedAt}} {{.Names}}" \
                     | sort -r \
-                    | awk '{print $NF}' \
+                    | awk '{print \$NF}' \
                     | tail -n +6 \
                     | while read c
                 do
-                    docker rm -f "$c" || true
+                    docker rm -f "\$c" || true
                 done
 
-                echo "Cleaning old images..."
+                echo "Cleaning old images (Keeping latest 5)..."
 
                 docker images \
                     --format "{{.CreatedAt}} {{.Repository}}:{{.Tag}}" \
                     | grep "^nivi-" \
                     | sort -r \
-                    | awk '{print $NF}' \
+                    | awk '{print \$NF}' \
                     | tail -n +6 \
                     | while read img
                 do
-                    docker rmi -f "$img" || true
+                    docker rmi -f "\$img" || true
                 done
 
                 echo "Deployment Completed Successfully."
 
                 EOF
-                '''
+                """
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                sh '''
+                sh """
                 ssh \
                 -i /var/lib/jenkins/.ssh/id_ed25519 \
                 -o StrictHostKeyChecking=no \
@@ -115,7 +115,7 @@ pipeline {
                 docker images | grep nivi || true
 
                 EOF
-                '''
+                """
             }
         }
     }
