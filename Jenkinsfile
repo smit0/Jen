@@ -3,106 +3,134 @@ pipeline {
     agent any
 
     environment {
-
-        APP_SERVER = "172.18.20.10"
-        APP_USER = "opc"
-
-        APP_DIR = "/home/opc/docker-app"
-
-        TZ = "Asia/Kolkata"
-
+        APP_SERVER = "172.18.20.46"
+        APP_USER   = "opc"
+        DEPLOY_DIR = "/home/opc/docker-app"
+        TZ         = "Asia/Kolkata"
     }
 
     stages {
 
         stage('Checkout') {
-
             steps {
-
                 checkout scm
-
             }
-
         }
 
-        stage('Deploy Application') {
-
+        stage('Copy Application') {
             steps {
-
                 sh """
+                scp -o StrictHostKeyChecking=no -r * \
+                ${APP_USER}@${APP_SERVER}:${DEPLOY_DIR}
+                """
+            }
+        }
 
-ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_SERVER} '
+        stage('Deploy Docker') {
+            steps {
+                sh """
+ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_SERVER} << 'EOF'
 
-cd ${APP_DIR}
+set -e
 
-echo "Updating Source"
-
-git pull
+cd ${DEPLOY_DIR}
 
 BUILD_NAME=\$(TZ=Asia/Kolkata date +%d-%m-%Y-%H-%M-%S)
 
-IMAGE=nivi-\$BUILD_NAME
+IMAGE="nivi-\$BUILD_NAME"
 
-CONTAINER=\${IMAGE}-container
+CONTAINER="\$IMAGE-container"
 
-echo "Building Docker Image"
+echo "======================================="
+echo "Building Image : \$IMAGE"
+echo "Container Name : \$CONTAINER"
+echo "======================================="
 
 docker build -t \$IMAGE .
 
-echo "Stopping Running Containers"
+echo "Stopping previous running containers..."
 
-docker ps -a \
---filter "name=nivi-" \
---format "{{.Names}}" \
-| while read c
+docker ps --filter "ancestor=nivi*" -q | while read id
 do
-docker rm -f \$c || true
+    [ -n "\$id" ] && docker stop \$id || true
 done
 
-echo "Starting Container"
+echo "Removing old containers..."
+
+docker ps -a --filter "name=nivi-" -q | while read id
+do
+    [ -n "\$id" ] && docker rm -f \$id || true
+done
+
+echo "Starting new container..."
 
 docker run -d \
--p 80:80 \
---restart unless-stopped \
---name \$CONTAINER \
-\$IMAGE
+    --restart unless-stopped \
+    --name \$CONTAINER \
+    -p 80:80 \
+    \$IMAGE
 
-echo "Removing old Containers"
+sleep 10
 
-docker ps -a \
---filter "name=nivi-" \
---format "{{.CreatedAt}} {{.Names}}" \
-| sort -r \
-| awk "{print \\$NF}" \
-| tail -n +6 \
-| while read c
-do
-docker rm -f \$c || true
-done
+echo "Checking container status..."
 
-echo "Removing old Images"
+docker ps | grep \$CONTAINER
+
+echo "Cleaning exited containers..."
+
+docker container prune -f
+
+echo "Keeping latest 5 images..."
 
 docker images \
---format "{{.CreatedAt}} {{.Repository}}" \
-| grep "nivi-" \
-| sort -r \
-| awk "{print \\$NF}" \
-| tail -n +6 \
-| while read i
+--format "{{.Repository}} {{.Tag}} {{.CreatedAt}}" \
+| grep "^nivi-" \
+| sort -rk3 \
+| awk 'NR>5 {print \$1":"\$2}' \
+| while read img
 do
-docker rmi -f \$i || true
+    docker rmi -f \$img || true
 done
 
+echo "Deployment completed successfully."
+
+EOF
+"""
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                sh """
+ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_SERVER} << 'EOF'
+
+echo "========== Running Containers =========="
 docker ps
 
-'
+echo
+echo "========== Docker Images =========="
+docker images
 
+EOF
 """
-
             }
-
         }
 
     }
 
+    post {
+
+        success {
+            echo "Deployment completed successfully."
+        }
+
+        failure {
+            echo "Deployment failed."
+        }
+
+        always {
+            cleanWs()
+        }
+
+    }
 }
